@@ -1,0 +1,20 @@
+# 忽略所有子目录中的 target 文件夹
+**/target/
+
+# Rust 编译临时文件
+**/*.rs.bk
+**/*.log
+**/*.swp
+
+# IDE / 编辑器配置
+**/.idea/
+**/.vscode/
+**/.DS_Store
+
+# Cargo lock 文件（如果是 lib 项目可忽略；若为 bin 项目应保留）
+**/Cargo.lock
+
+**/.sqlx
+
+**/.env
+**/.env.docker
