@@ -1,25 +1,19 @@
 use axum::{
-    extract::{Path, Query, State}, 
-    http::StatusCode, 
-    response::Redirect, 
-    Extension, 
-    Json
+    Extension, Json,
+    extract::{Path, Query, State},
+    http::StatusCode,
+    response::Redirect,
 };
 use axum_extra::TypedHeader;
-use chrono::NaiveDateTime;
+use chrono::{NaiveDateTime, Utc};
 use chrono_tz::Tz;
-use headers::{UserAgent, Referer};
-use std::sync::Arc;
+use headers::{Referer, UserAgent};
 use serde::{Deserialize, Serialize};
-use validator::{Validate, ValidationError};
+use std::sync::Arc;
 use tracing::warn;
+use validator::{Validate, ValidationError};
 
-use crate::{
-    state::AppState, 
-    services::ShortlinkService, 
-    models::LinkView
-};
-
+use crate::{models::LinkView, services::shortlinks::ShortlinkService, state::AppState};
 
 /// 客户端请求：创建短链
 #[derive(Deserialize, Validate)]
@@ -41,7 +35,6 @@ fn default_timezone() -> String {
     "UTC".to_string()
 }
 
-
 /// 校验是否是 IANA 时区名
 fn validate_tz(timezone: &str) -> Result<(), ValidationError> {
     if timezone.parse::<Tz>().is_err() {
@@ -54,12 +47,12 @@ fn validate_tz(timezone: &str) -> Result<(), ValidationError> {
 #[derive(Debug, Default, Deserialize, Validate)]
 pub struct LinkQuery {
     // ---筛选条件---
-    pub user_id: Option<u64>, // 用户ID
-    pub short_code: Option<String>, // 短码
-    pub long_url: Option<String>, // 长 URL
-    pub click_count: Option<u64>, // 点击量
-    pub date_from:    Option<NaiveDateTime>, // 日期范围
-    pub date_to:      Option<NaiveDateTime>,
+    pub user_id: Option<u64>,             // 用户ID
+    pub short_code: Option<String>,       // 短码
+    pub long_url: Option<String>,         // 长 URL
+    pub click_count: Option<u64>,         // 点击量
+    pub date_from: Option<NaiveDateTime>, // 日期范围
+    pub date_to: Option<NaiveDateTime>,
     /// 客户端所在时区（使用 IANA 时区名称，如 "Asia/Shanghai"）。
     /// 该参数用于将前端传入的本地时间范围转换为 UTC 时间进行后端查询。
     /// 如果未传此参数，后端默认按照 UTC 查询，可能导致跨时区用户的查询结果不准确。
@@ -75,8 +68,9 @@ pub struct LinkQuery {
 }
 
 /// 默认每页数量
-fn default_limit() -> u64 { 10 }
-
+fn default_limit() -> u64 {
+    10
+}
 
 /// 返回数据
 #[derive(Serialize, Deserialize)]
@@ -85,7 +79,6 @@ pub struct LinkList {
     pub count: i64,
 }
 
-
 /// 删除短链请求
 #[derive(Deserialize, Validate)]
 pub struct DeleteLinksReq {
@@ -93,22 +86,22 @@ pub struct DeleteLinksReq {
     pub ids: Vec<u64>,
 }
 
-
 /// 点击量统计（按天）
 #[derive(Debug, Deserialize, Validate)]
 pub struct LinkStatsQuery {
-    pub short_code: String,   // 必填：要统计哪条短链
+    pub short_code: String, // 必填：要统计哪条短链
     #[serde(default = "default_days")]
     #[validate(range(min = 1, message = "Days must be greater than 0"))]
-    pub days: u8, 
+    pub days: u8,
     #[serde(default = "default_timezone")]
     #[validate(custom(function = "validate_tz"))]
     pub timezone: String, // 选填：时区偏移
 }
 
 /// 默认天数
-fn default_days() -> u8 { 30 }
-
+fn default_days() -> u8 {
+    30
+}
 
 /// 创建短链
 pub async fn create(
@@ -118,7 +111,10 @@ pub async fn create(
 ) -> Result<Json<ShortlinkCreateResp>, (StatusCode, String)> {
     // 校验 url
     if let Err(e) = payload.validate() {
-        warn!("create_shortlink: 参数校验失败: user_id={}, error={}", user_id, e);
+        warn!(
+            "create_shortlink: 参数校验失败: user_id={}, error={}",
+            user_id, e
+        );
         return Err((StatusCode::BAD_REQUEST, format!("Validation error: {}", e)));
     }
 
@@ -130,26 +126,25 @@ pub async fn create(
     let ttl = match payload.ttl {
         Some(ttl) => {
             if ttl < min_ttl || ttl > max_ttl {
-                warn!("create_shortlink: TTL越界: user_id={}, ttl={}, min={}, max={}", user_id, ttl, min_ttl, max_ttl);
+                warn!(
+                    "create_shortlink: TTL越界: user_id={}, ttl={}, min={}, max={}",
+                    user_id, ttl, min_ttl, max_ttl
+                );
                 return Err((
-                    StatusCode::BAD_REQUEST, 
-                    format!("TTL must be between {} and {}", min_ttl, max_ttl)
+                    StatusCode::BAD_REQUEST,
+                    format!("TTL must be between {} and {}", min_ttl, max_ttl),
                 ));
             }
             ttl
-        },
+        }
         None => min_ttl,
     };
 
     // 创建短链
-    let short_url = ShortlinkService::create_shortlink(
-        &state, 
-        &payload.url,
-        payload.short_code,
-        ttl,
-        user_id
-    ).await?;
-    
+    let short_url =
+        ShortlinkService::create_shortlink(&state, &payload.url, payload.short_code, ttl, user_id)
+            .await?;
+
     Ok(Json(ShortlinkCreateResp { short_url }))
 }
 
@@ -163,14 +158,8 @@ pub async fn redirect(
 ) -> Result<Redirect, (StatusCode, String)> {
     let ua = user_agent.as_str();
     let ref_ = referer.map(|r| r.to_string()).unwrap_or_default();
-    let long_url = ShortlinkService::get_long_url(
-        &ip, 
-        ua, 
-        &ref_, 
-        &state, 
-        &short_code
-    ).await?;
-    
+    let long_url = ShortlinkService::get_long_url(&ip, ua, &ref_, &state, &short_code).await?;
+
     Ok(Redirect::to(&long_url))
 }
 
@@ -182,18 +171,44 @@ pub async fn list_links(
 ) -> Result<Json<LinkList>, (StatusCode, String)> {
     // 校验查询参数
     if let Err(e) = q.validate() {
-        warn!("list_links: 查询参数校验失败: user_id={}, error={}", user_id, e);
+        warn!(
+            "list_links: 查询参数校验失败: user_id={}, error={}",
+            user_id, e
+        );
         return Err((StatusCode::BAD_REQUEST, format!("Validation error: {}", e)));
     }
 
     q.user_id = Some(user_id);
-    
-    let (links, count) = ShortlinkService::list_links(
-        &state,
-        &q,
-        q.limit,
-        q.offset,
-    ).await?;
+
+    // 将本地时间范围转换为 UTC，避免跨时区查询偏差
+    if q.date_from.is_some() || q.date_to.is_some() {
+        let tz: Tz = q.timezone.parse().map_err(|_| {
+            warn!("list_links: 无法解析时区: {}", q.timezone);
+            (StatusCode::BAD_REQUEST, "Invalid timezone".into())
+        })?;
+
+        let mut convert_local = |dt: NaiveDateTime| -> Result<NaiveDateTime, (StatusCode, String)> {
+            tz.from_local_datetime(&dt)
+                .single()
+                .map(|dt| dt.with_timezone(&Utc).naive_utc())
+                .ok_or_else(|| {
+                    warn!("list_links: 本地时间无法唯一映射: dt={} tz={}", dt, tz);
+                    (
+                        StatusCode::BAD_REQUEST,
+                        "Date time is ambiguous or invalid for timezone".into(),
+                    )
+                })
+        };
+
+        if let Some(local_from) = q.date_from {
+            q.date_from = Some(convert_local(local_from)?);
+        }
+        if let Some(local_to) = q.date_to {
+            q.date_to = Some(convert_local(local_to)?);
+        }
+    }
+
+    let (links, count) = ShortlinkService::list_links(&state, &q, q.limit, q.offset).await?;
 
     Ok(Json(LinkList { links, count }))
 }
@@ -206,14 +221,13 @@ pub async fn delete_links(
 ) -> Result<(), (StatusCode, String)> {
     // 校验删除参数
     if let Err(e) = payload.validate() {
-        warn!("delete_links: 删除参数校验失败: user_id={}, error={}", user_id, e);
+        warn!(
+            "delete_links: 删除参数校验失败: user_id={}, error={}",
+            user_id, e
+        );
         return Err((StatusCode::BAD_REQUEST, format!("Validation error: {}", e)));
     }
-    ShortlinkService::delete_links(
-        &state,
-        payload.ids,
-        user_id,
-    ).await?;
+    ShortlinkService::delete_links(&state, payload.ids, user_id).await?;
 
     Ok(())
 }
@@ -225,17 +239,16 @@ pub async fn get_link_stats(
     Query(q): Query<LinkStatsQuery>,
 ) -> Result<Json<Vec<(String, i64)>>, (StatusCode, String)> {
     if let Err(e) = q.validate() {
-        warn!("get_link_stats: 查询参数校验失败: user_id={}, error={}", user_id, e);
+        warn!(
+            "get_link_stats: 查询参数校验失败: user_id={}, error={}",
+            user_id, e
+        );
         return Err((StatusCode::BAD_REQUEST, format!("Validation error: {}", e)));
     }
 
-    let stats = ShortlinkService::get_link_stats(
-        &state,
-        &q.short_code,
-        user_id,
-        q.timezone,
-        q.days,
-    ).await?;
+    let stats =
+        ShortlinkService::get_link_stats(&state, &q.short_code, user_id, q.timezone, q.days)
+            .await?;
 
     Ok(Json(stats))
 }

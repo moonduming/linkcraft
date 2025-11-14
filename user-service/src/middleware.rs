@@ -1,18 +1,16 @@
-use std::sync::Arc;
+use std::{net::SocketAddr, sync::Arc};
 
 use axum::{
-    body::Body, 
-    extract::State,
+    body::Body,
+    extract::{ConnectInfo, State},
+    http::{Request, StatusCode},
     middleware::Next,
-    response::Response, 
-    http::{StatusCode, Request},
+    response::Response,
 };
-use rand::{rng, seq::IndexedRandom};
 use tracing::warn;
 
 use crate::state::AppState;
 use common::rate_limiter::rate_limit;
-
 
 /// 获取真实 IP
 pub async fn real_ip_layer(
@@ -42,17 +40,20 @@ pub async fn real_ip_layer(
     Ok(next.run(req).await)
 }
 
-
 /// ip 限流
 pub async fn ip_rate_limiter(
     State(state): State<Arc<AppState>>,
+    ConnectInfo(addr): ConnectInfo<SocketAddr>,
     req: Request<Body>,
     next: Next,
 ) -> Result<Response, (StatusCode, String)> {
-    let ip = req.extensions().get::<String>().ok_or_else(|| {
-        warn!("ip_rate_limiter: 没有可用 IP");
-        (StatusCode::INTERNAL_SERVER_ERROR, "No IP".into())
-    })?;
+    // 优先取 real_ip_layer 注入的真实 IP；否则回退到 TCP 源地址
+    let ip: String = req
+        .extensions()
+        .get::<String>()
+        .cloned()
+        .unwrap_or_else(|| addr.ip().to_string());
+
     let key = format!("rate_limit:ip:{}", ip);
     // 从配置中获取限流参数
     let (limit, window_secs) = {
@@ -62,13 +63,13 @@ pub async fn ip_rate_limiter(
 
     // ip 限流校验
     {
-        let manager = state.managers
-            .choose(&mut rng())
-            .ok_or_else(|| {
-                warn!("ip_rate_limiter: 没有可用 Redis 连接池, ip={}", ip);
-                (StatusCode::INTERNAL_SERVER_ERROR, "No Redis manager".into())
-            })?;
-        let mut conn = manager.lock().await;
+        let mut conn = state.redis_pool.get().await.map_err(|e| {
+            warn!("ip_rate_limiter: Redis 获取连接失败: err={}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Redis err: {}", e),
+            )
+        })?;
 
         if let Err(e) = rate_limit(&key, limit, window_secs, &mut conn).await {
             warn!("ip_rate_limiter ip限流校验失败: ip={}, err={}", ip, e);
@@ -78,5 +79,4 @@ pub async fn ip_rate_limiter(
     }
 
     Ok(next.run(req).await)
-
 }

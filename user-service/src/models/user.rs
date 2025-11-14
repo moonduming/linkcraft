@@ -1,8 +1,9 @@
-use sqlx::MySqlPool;
 use axum::http::StatusCode;
-use redis::{aio::ConnectionManager, AsyncCommands};
+use deadpool_redis::Connection;
+use redis::AsyncCommands;
+use serde::{Deserialize, Serialize};
+use sqlx::MySqlPool;
 use tracing::warn;
-use serde::{Serialize, Deserialize};
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct User {
@@ -13,24 +14,26 @@ pub struct User {
     pub status: i8,
 }
 
-
 impl User {
     /// 判断邮箱是否已经注册
     pub async fn exists_by_email(
         mysql_pool: &MySqlPool,
-        email: &str
+        email: &str,
     ) -> Result<bool, (StatusCode, String)> {
-        let exists = sqlx::query_scalar!(
-            "SELECT 1 FROM users WHERE email = ? LIMIT 1",
-            email,
-        )
-        .fetch_optional(mysql_pool)
-        .await
-        .map_err(|e| {
-            warn!("exists_by_email: DB select error: email={}, err={}", email, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("DB select error: {}", e))
-        })?
-        .is_some();
+        let exists = sqlx::query_scalar!("SELECT 1 FROM users WHERE email = ? LIMIT 1", email,)
+            .fetch_optional(mysql_pool)
+            .await
+            .map_err(|e| {
+                warn!(
+                    "exists_by_email: DB select error: email={}, err={}",
+                    email, e
+                );
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("DB select error: {}", e),
+                )
+            })?
+            .is_some();
 
         Ok(exists)
     }
@@ -52,7 +55,10 @@ impl User {
         .await
         .map_err(|e| {
             warn!("create: DB insert error: email={}, err={}", email, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("DB insert error: {}", e))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("DB insert error: {}", e),
+            )
         })?;
 
         Ok(())
@@ -64,7 +70,6 @@ impl User {
         id: Option<u64>,
         email: Option<&str>,
     ) -> Result<Option<User>, (StatusCode, String)> {
-
         // run the correct query and await inside each branch so the match arms have the same type
         let row = match (id, email) {
             (Some(id), None) => {
@@ -76,15 +81,13 @@ impl User {
                 .fetch_optional(mysql_pool)
                 .await
             }
-            (None, Some(email)) => {
-                sqlx::query_as!(
-                    User,
-                    "SELECT id, email, nickname, password, status FROM users WHERE email = ? LIMIT 1",
-                    email
-                )
-                .fetch_optional(mysql_pool)
-                .await
-            }
+            (None, Some(email)) => sqlx::query_as!(
+                User,
+                "SELECT id, email, nickname, password, status FROM users WHERE email = ? LIMIT 1",
+                email
+            )
+            .fetch_optional(mysql_pool)
+            .await,
             _ => {
                 warn!("find_user: 参数错误: id={:?}, email={:?}", id, email);
                 return Err((
@@ -94,7 +97,10 @@ impl User {
             }
         }
         .map_err(|e| {
-            warn!("find_user: DB select error: id={:?}, email={:?}, err={}", id, email, e);
+            warn!(
+                "find_user: DB select error: id={:?}, email={:?}, err={}",
+                id, email, e
+            );
             (
                 StatusCode::INTERNAL_SERVER_ERROR,
                 format!("DB select error: {e}"),
@@ -105,48 +111,53 @@ impl User {
     }
 
     /// 读取次数
-    async fn read_count(
-        redis_mgr: &mut ConnectionManager,
-        key: &str,
-    ) -> Result<i64, (StatusCode, String)> {
-        let cnt = redis_mgr.get::<_,Option<i64>>(key).await.map_err(|e| {
-            warn!("read_count: Redis get error: key={}, err={}", key, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Redis get error: {}", e))
-        })?.unwrap_or(0);
+    async fn read_count(conn: &mut Connection, key: &str) -> Result<i64, (StatusCode, String)> {
+        let cnt = conn
+            .get::<_, Option<i64>>(key)
+            .await
+            .map_err(|e| {
+                warn!("read_count: Redis get error: key={}, err={}", key, e);
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Redis get error: {}", e),
+                )
+            })?
+            .unwrap_or(0);
 
         Ok(cnt)
     }
 
     /// 检查次数是否超过限制
     async fn check_limit(
-        redis_mgr: &mut ConnectionManager,
+        conn: &mut Connection,
         key: &str,
         limit: i64,
     ) -> Result<bool, (StatusCode, String)> {
-        let cnt = Self::read_count(redis_mgr, key).await?;
+        let cnt = Self::read_count(conn, key).await?;
         Ok(cnt >= limit)
     }
 
     async fn incr_count(
-        redis_mgr: &mut ConnectionManager,
+        conn: &mut Connection,
         key: &str,
         ttl: i64,
     ) -> Result<(), (StatusCode, String)> {
-        let count: i64 = redis_mgr
-        .incr(&key, 1)
-        .await
-        .map_err(|e| {
+        let count: i64 = conn.incr(&key, 1).await.map_err(|e| {
             warn!("incr_count: Redis Incr err: key={}, err={}", key, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Redis Incr err: {}", e))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Redis Incr err: {}", e),
+            )
         })?;
 
         if count == 1 {
             // 设置登录失败计数过期时间
-            let _: () = redis_mgr.expire(&key, ttl)
-            .await
-            .map_err(|e| {
+            let _: () = conn.expire(&key, ttl).await.map_err(|e| {
                 warn!("incr_count: Redis Expire err: key={}, err={}", key, e);
-                (StatusCode::INTERNAL_SERVER_ERROR, format!("Redis Expire err: {}", e))
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Redis Expire err: {}", e),
+                )
             })?;
         }
 
@@ -155,18 +166,14 @@ impl User {
 
     /// 判断用户是否可以登录
     pub async fn can_login(
-        redis_mgr: &mut ConnectionManager,
+        conn: &mut Connection,
         user_login_fail_limit: i64,
         ip_user_login_fail_limit: i64,
         user_fail_key: &str,
         ip_user_fail_key: &str,
     ) -> Result<(), (StatusCode, String)> {
         // 只读取计数，不再自增；真正失败后再单独调用记录函数
-        if Self::check_limit(
-            redis_mgr, 
-            user_fail_key, 
-            user_login_fail_limit,
-        ).await? {
+        if Self::check_limit(conn, user_fail_key, user_login_fail_limit).await? {
             warn!("can_login: 用户登录被限流: user_fail_key={}", user_fail_key);
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
@@ -174,12 +181,11 @@ impl User {
             ));
         }
 
-        if Self::check_limit(
-            redis_mgr, 
-            ip_user_fail_key, 
-            ip_user_login_fail_limit,
-        ).await? {
-            warn!("can_login: IP 登录被限流: ip_user_fail_key={}", ip_user_fail_key);
+        if Self::check_limit(conn, ip_user_fail_key, ip_user_login_fail_limit).await? {
+            warn!(
+                "can_login: IP 登录被限流: ip_user_fail_key={}",
+                ip_user_fail_key
+            );
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too many login attempts from this device, please try again later".into(),
@@ -191,45 +197,45 @@ impl User {
 
     /// 记录登录失败
     pub async fn record_login_fail(
-        redis_mgr: &mut ConnectionManager,
+        conn: &mut Connection,
         user_fail_key: &str,
         ip_user_fail_key: &str,
         user_login_fail_ttl: i64,
         ip_user_login_fail_ttl: i64,
     ) -> Result<(), (StatusCode, String)> {
-        Self::incr_count(
-            redis_mgr, 
-            user_fail_key, 
-            user_login_fail_ttl,
-        ).await?;
+        Self::incr_count(conn, user_fail_key, user_login_fail_ttl).await?;
 
-        Self::incr_count(
-            redis_mgr, 
-            ip_user_fail_key, 
-            ip_user_login_fail_ttl,
-        ).await?;
+        Self::incr_count(conn, ip_user_fail_key, ip_user_login_fail_ttl).await?;
 
         Ok(())
     }
 
     /// 登录成功
     pub async fn login_success(
-        redis_mgr: &mut ConnectionManager,
+        conn: &mut Connection,
         user_fail_key: &str,
         ip_user_fail_key: &str,
     ) -> Result<(), (StatusCode, String)> {
-        let _: () = redis_mgr.del(user_fail_key)
-        .await
-        .map_err(|e| {
-            warn!("login_success: Redis Del err: key={}, err={}", user_fail_key, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Redis Del err: {}", e))
+        let _: () = conn.del(user_fail_key).await.map_err(|e| {
+            warn!(
+                "login_success: Redis Del err: key={}, err={}",
+                user_fail_key, e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Redis Del err: {}", e),
+            )
         })?;
 
-        let _: () = redis_mgr.del(ip_user_fail_key)
-        .await
-        .map_err(|e| {
-            warn!("login_success: Redis Del err: key={}, err={}", ip_user_fail_key, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Redis Del err: {}", e))
+        let _: () = conn.del(ip_user_fail_key).await.map_err(|e| {
+            warn!(
+                "login_success: Redis Del err: key={}, err={}",
+                ip_user_fail_key, e
+            );
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Redis Del err: {}", e),
+            )
         })?;
 
         Ok(())
@@ -237,12 +243,15 @@ impl User {
 
     /// 检查当前 IP 是否超过注册次数限制
     pub async fn can_register(
-        redis_mgr: &mut ConnectionManager,
+        conn: &mut Connection,
         ip_register_limit: i64,
         ip_register_key: &str,
     ) -> Result<(), (StatusCode, String)> {
-        if Self::check_limit(redis_mgr, ip_register_key, ip_register_limit).await? {
-            warn!("can_register: 注册被限流: ip_register_key={}", ip_register_key);
+        if Self::check_limit(conn, ip_register_key, ip_register_limit).await? {
+            warn!(
+                "can_register: 注册被限流: ip_register_key={}",
+                ip_register_key
+            );
             return Err((
                 StatusCode::TOO_MANY_REQUESTS,
                 "Too many registration attempts from this device, please try again later".into(),
@@ -253,10 +262,10 @@ impl User {
 
     /// 记录注册次数
     pub async fn record_register(
-        redis_mgr: &mut ConnectionManager,
+        conn: &mut Connection,
         ip_register_key: &str,
         ip_register_ttl: i64,
     ) -> Result<(), (StatusCode, String)> {
-        Self::incr_count(redis_mgr, ip_register_key, ip_register_ttl).await
+        Self::incr_count(conn, ip_register_key, ip_register_ttl).await
     }
 }

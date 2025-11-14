@@ -1,11 +1,4 @@
-use axum::{
-    body::Body, 
-    http::Request, 
-    middleware::Next, 
-    response::Response, 
-    http::StatusCode
-};
-
+use axum::{body::Body, http::Request, http::StatusCode, middleware::Next, response::Response};
 
 /// 获取真实 IP
 pub async fn real_ip_layer(

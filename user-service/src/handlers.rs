@@ -1,17 +1,16 @@
+use crate::{
+    services::{LoginResp, UserService},
+    state::AppState,
+};
 use axum::{
-    extract::{State, Extension}, 
-    http::StatusCode, 
-    Json
+    Json,
+    extract::{Extension, State},
+    http::StatusCode,
 };
 use serde::Deserialize;
-use validator::Validate;
 use std::sync::Arc;
-use crate::{
-    state::AppState, 
-    services::{UserService, LoginResp}
-};
 use tracing::warn;
-
+use validator::Validate;
 
 #[derive(Deserialize, Debug, Validate)]
 pub struct UserPayload {
@@ -25,7 +24,6 @@ pub struct UserPayload {
     pub email: String,
 }
 
-
 #[derive(Deserialize, Debug, Validate)]
 pub struct LoginPayload {
     #[validate(email)]
@@ -33,47 +31,47 @@ pub struct LoginPayload {
     pub password: String,
 }
 
-
 /// 注册
 pub async fn register(
     State(state): State<Arc<AppState>>,
-    Extension(ip): Extension<String>, 
+    Extension(ip): Extension<String>,
     Json(payload): Json<UserPayload>,
 ) -> Result<(), (StatusCode, String)> {
     payload.validate().map_err(|e| {
-        warn!("register: 用户注册参数校验失败: ip={}, email={}, error={}", ip, payload.email, e);
+        warn!(
+            "register: 用户注册参数校验失败: ip={}, email={}, error={}",
+            ip, payload.email, e
+        );
         (StatusCode::BAD_REQUEST, format!("Validation error: {}", e))
     })?;
 
     UserService::register(
-        &state, 
-        &payload.nickname, 
-        &payload.password, 
+        &state,
+        &payload.nickname,
+        &payload.password,
         &payload.email,
-        &ip
-    ).await?;
+        &ip,
+    )
+    .await?;
 
     Ok(())
 }
 
-
 /// 登录
 pub async fn login(
     State(state): State<Arc<AppState>>,
-    Extension(ip): Extension<String>, 
+    Extension(ip): Extension<String>,
     Json(payload): Json<LoginPayload>,
 ) -> Result<Json<LoginResp>, (StatusCode, String)> {
     payload.validate().map_err(|e| {
-        warn!("login: 用户登录参数校验失败: ip={}, email={}, error={}", ip, payload.email, e);
+        warn!(
+            "login: 用户登录参数校验失败: ip={}, email={}, error={}",
+            ip, payload.email, e
+        );
         (StatusCode::BAD_REQUEST, format!("Validation error: {}", e))
     })?;
 
-    let resp = UserService::login(
-        &state, 
-        &payload.email, 
-        &payload.password,
-        &ip
-    ).await?;
+    let resp = UserService::login(&state, &payload.email, &payload.password, &ip).await?;
 
     Ok(Json(resp))
 }

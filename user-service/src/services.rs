@@ -1,18 +1,12 @@
-use axum::http::StatusCode;
+use crate::{models::session::create_session, models::user::User, state::AppState};
 use argon2::{Argon2, PasswordHash, PasswordVerifier};
-use password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
-use jsonwebtoken::{encode, EncodingKey, Header};
-use rand::{rng, seq::IndexedRandom};
-use serde::{Serialize, Deserialize};
-use uuid::Uuid;
-use tracing::warn;
-use crate::{
-    state::AppState, 
-    models::user::User, 
-    models::session::create_session
-};
+use axum::http::StatusCode;
 use common::models::Claims;
-
+use jsonwebtoken::{EncodingKey, Header, encode};
+use password_hash::{PasswordHasher, SaltString, rand_core::OsRng};
+use serde::{Deserialize, Serialize};
+use tracing::warn;
+use uuid::Uuid;
 
 #[derive(Serialize, Deserialize)]
 pub struct LoginResp {
@@ -31,15 +25,13 @@ impl UserService {
         email: &str,
         ip: &str,
     ) -> Result<(), (StatusCode, String)> {
-        let manager = state
-            .managers
-            .choose(&mut rng())
-            .ok_or_else(|| {
-                warn!("register: No Redis manager");
-                (StatusCode::INTERNAL_SERVER_ERROR, "No Redis manager".into())
-            })?;
-
-        let mut conn = manager.lock().await;
+        let mut conn = state.redis_pool.get().await.map_err(|e| {
+            warn!("register: Redis 获取连接失败: err={}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Redis err: {}", e),
+            )
+        })?;
         // 判断 IP 是否到达注册次数上限
         let config = state.config.read().await;
         let ip_register_key = format!("register:ip:{}", ip);
@@ -47,7 +39,7 @@ impl UserService {
         let ip_register_ttl = config.ip_register_ttl;
 
         User::can_register(&mut conn, ip_register_limit, &ip_register_key).await?;
-        
+
         // 判断邮箱是否已经注册
         if User::exists_by_email(&state.mysql_pool, email).await? {
             warn!("register: email already registered: email={}", email);
@@ -59,17 +51,20 @@ impl UserService {
         let hashed_pwd = argon2
             .hash_password(password.as_bytes(), &salt)
             .map_err(|e| {
-                warn!("register: password encryption failed: email={}, err={}", email, e);
+                warn!(
+                    "register: password encryption failed: email={}, err={}",
+                    email, e
+                );
                 (
-                    StatusCode::INTERNAL_SERVER_ERROR, 
-                    format!("Password encryption failed: {}", e)
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    format!("Password encryption failed: {}", e),
                 )
             })?
             .to_string();
 
         // 记录注册次数
         User::record_register(&mut conn, &ip_register_key, ip_register_ttl).await?;
-        
+
         User::create(&state.mysql_pool, nickname, &hashed_pwd, email).await?;
 
         Ok(())
@@ -86,19 +81,18 @@ impl UserService {
             Some(user) => user,
             None => {
                 warn!("login: user not found: email={}", email);
-                return Err((StatusCode::NOT_FOUND, "User not found".into()))
-            },
+                return Err((StatusCode::NOT_FOUND, "User not found".into()));
+            }
         };
 
-        let manager = state.managers
-            .choose(&mut rng())
-            .ok_or_else(|| {
-                warn!("login: No Redis manager");
-                (StatusCode::INTERNAL_SERVER_ERROR, "No Redis manager".into())
-            })?;
+        let mut conn = state.redis_pool.get().await.map_err(|e| {
+            warn!("login: Redis 获取连接失败: err={}", e);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Redis err: {}", e),
+            )
+        })?;
 
-        let mut conn = manager.lock().await;
-        
         let config = state.config.read().await;
 
         let user_login_fail_limit = config.user_login_fail_limit;
@@ -118,14 +112,13 @@ impl UserService {
         .await?;
 
         // 验证密码 (argon2)
-        let parsed_hash = PasswordHash::new(&user.password)
-            .map_err(|_| {
-                warn!("login: password hash parse failed: email={}", email);
-                (
-                    StatusCode::INTERNAL_SERVER_ERROR, 
-                    "Password hash parse failed".into()
-                )
-            })?;
+        let parsed_hash = PasswordHash::new(&user.password).map_err(|_| {
+            warn!("login: password hash parse failed: email={}", email);
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "Password hash parse failed".into(),
+            )
+        })?;
 
         let argon2 = Argon2::default();
         // 验证密码失败时记录失败并返回
@@ -155,38 +148,26 @@ impl UserService {
         let jti = Uuid::new_v4().to_string();
 
         // 保存 JWT ID 到 redis
-        create_session(
-            config.user_token_limit,
-            user.id,
-            ttl, 
-            &jti,
-            &mut conn,
-        )
-        .await?;
-        
-        let claims = Claims { 
-            sub: user.id, 
-            exp, 
-            jti: jti
+        create_session(config.user_token_limit, user.id, ttl, &jti, &mut conn).await?;
+
+        let claims = Claims {
+            sub: user.id,
+            exp,
+            jti: jti,
         };
-        
+
         let token = encode(
-            &Header::default(), 
-            &claims, 
-            &EncodingKey::from_secret(config.jwt_secret.as_bytes())
+            &Header::default(),
+            &claims,
+            &EncodingKey::from_secret(config.jwt_secret.as_bytes()),
         )
         .map_err(|e| {
             warn!("login: JWT encode failed: email={}, err={}", email, e);
             (StatusCode::INTERNAL_SERVER_ERROR, format!("JWT err: {}", e))
         })?;
 
-        User::login_success(
-            &mut conn,
-            &user_fail_key,
-            &ip_user_fail_key,
-        )
-        .await?;
-        
+        User::login_success(&mut conn, &user_fail_key, &ip_user_fail_key).await?;
+
         Ok(LoginResp {
             token,
             nickname: user.nickname,

@@ -8,3 +8,4 @@ redis = { version = "0.32.4", features = ["tokio-comp", "aio", "connection-manag
 sqlx = { version = "0.8.6", features = ["mysql", "runtime-tokio", "macros", "chrono"] }
 tracing = "0.1.41"
 serde = "1.0.219"
+deadpool-redis = "0.22.0"

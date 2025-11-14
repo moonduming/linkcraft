@@ -1,14 +1,12 @@
+use config::{Config, ConfigError, Environment};
 use serde::Deserialize;
-use config::{Config, Environment, ConfigError};
 // use dotenvy;
 // use std::env;
 
 #[derive(Debug, Deserialize)]
 pub struct AppConfig {
-    /// 数据库连接字符串
+    /// MySQL 连接字符串
     pub database_url: String,
-    /// 数据库最大连接数
-    pub max_connections: u32,
     /// Redis 连接字符串
     pub redis_url: String,
     /// 服务地址
@@ -49,6 +47,34 @@ pub struct AppConfig {
     pub user_token_limit: u8,
     /// 用户限流时间窗口（秒）
     pub user_rate_limit_window: i64,
+    /// 全局 HTTP 超时时间（毫秒）
+    pub global_timeout_ms: u64,
+    /// 最大 MySQL 连接数
+    pub mysql_max_connections: u32,
+    /// 等待连接池中空闲连接的超时时间（毫秒）
+    pub mysql_acquire_timeout_ms: u64,
+    /// 单个查询语句的最大执行时间（毫秒）
+    pub mysql_query_timeout_ms: u64,
+    /// InnoDB 表中等待锁的最大时间（秒）
+    pub mysql_lock_wait_timeout_s: u64,
+    /// Redis 连接池最大连接数
+    pub redis_pool_size: usize,
+    /// 等待空闲连接的最大时间（毫秒）
+    pub redis_timeout_wait_ms: u64,
+    /// 新建连接的最大时间（毫秒）
+    pub redis_timeout_create_ms: u64,
+    /// 取连接前健康检查的超时时间（毫秒）
+    pub redis_timeout_recycle_ms: u64,
+    /// Redis 后台作业队列容量
+    pub bg_redis_queue_cap: usize,
+    /// Redis 后台作业最大并发数
+    pub bg_redis_max_concurrency: usize,
+    /// 过期短链删除任务的执行间隔（秒）
+    pub bg_expired_links_sync_interval: u64,
+    /// 点击量同步任务的执行间隔（秒）
+    pub bg_click_counts_sync_interval: u64,
+    /// 访问日志同步任务的执行间隔（秒）
+    pub bg_visit_logs_sync_interval: u64,
 }
 
 impl AppConfig {
@@ -63,19 +89,21 @@ impl AppConfig {
     }
 }
 
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::env;
     use serial_test::serial;
+    use std::env;
 
     #[test]
     #[serial]
     fn test_app_config() {
         // 设置必要的环境变量，模拟 .env
         unsafe {
-            env::set_var("DATABASE_URL", "mysql://root:66787@localhost:3306/shortlink");
+            env::set_var(
+                "DATABASE_URL",
+                "mysql://root:66787@localhost:3306/shortlink",
+            );
             env::set_var("REDIS_URL", "redis://127.0.0.1/");
             env::set_var("ADDR", "127.0.0.1:3000");
             env::set_var("JWT_SECRET", "secret");

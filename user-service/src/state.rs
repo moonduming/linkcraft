@@ -1,10 +1,10 @@
-use sqlx::MySqlPool;
-use tokio::sync::{Mutex, RwLock};
-use redis::aio::ConnectionManager;
 use crate::config::AppConfig;
+use deadpool_redis::Pool;
+use sqlx::MySqlPool;
+use tokio::sync::RwLock;
 
 pub struct AppState {
     pub mysql_pool: MySqlPool,
-    pub managers: Vec<Mutex<ConnectionManager>>,
+    pub redis_pool: Pool,
     pub config: RwLock<AppConfig>,
 }

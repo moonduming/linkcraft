@@ -1,19 +1,17 @@
 use axum::{
-    body::Body, 
-    extract::State, 
-    http::{Request, StatusCode}, 
-    middleware::Next, 
-    response::Response
+    body::Body,
+    extract::State,
+    http::{Request, StatusCode},
+    middleware::Next,
+    response::Response,
 };
-use jsonwebtoken::{decode, DecodingKey, Validation, Algorithm};
-use std::sync::Arc;
-use rand::{rng, seq::IndexedRandom};
+use jsonwebtoken::{Algorithm, DecodingKey, Validation, decode};
 use redis::AsyncCommands;
+use std::sync::Arc;
 use tracing::warn;
 
 use crate::state::AppState;
 use common::models::Claims;
-
 
 pub async fn jwt_auth(
     State(state): State<Arc<AppState>>,
@@ -28,10 +26,7 @@ pub async fn jwt_auth(
         .and_then(|h| h.strip_prefix("Bearer "))
         .ok_or_else(|| {
             warn!("jwt_auth: 缺少 Authorization header");
-            (
-                StatusCode::UNAUTHORIZED, 
-                "Missing token".into()
-            )
+            (StatusCode::UNAUTHORIZED, "Missing token".into())
         })?;
 
     // 校验 JWT 是否过期
@@ -39,11 +34,11 @@ pub async fn jwt_auth(
         let cfg = state.config.read().await;
         cfg.jwt_secret.clone()
     };
-    
+
     let claims = decode::<Claims>(
-        token, 
-        &DecodingKey::from_secret(jwt_secret.as_bytes()), 
-        &Validation::new(Algorithm::HS256)
+        token,
+        &DecodingKey::from_secret(jwt_secret.as_bytes()),
+        &Validation::new(Algorithm::HS256),
     )
     .map_err(|e| {
         warn!("jwt_auth: JWT 校验失败: {}", e);
@@ -51,21 +46,19 @@ pub async fn jwt_auth(
     })?;
 
     let key = format!("session:{}", claims.claims.jti);
-    // 随机选择一个 Redis 连接
-    let manager = state.managers
-        .choose(&mut rng())
-        .ok_or_else(|| {
-            warn!("jwt_auth: 没有可用 Redis 连接池");
-            (StatusCode::INTERNAL_SERVER_ERROR, "No Redis manager".into())
-        })?;
-
     // 构建作用域，让 conn 在作用域结束时自动释放
     {
-        let mut conn = manager.lock().await;
+        let mut conn = state.redis_pool.get().await.map_err(|e| {
+            warn!("jwt_auth: 获取 Redis 连接失败: {}", e);
+            (StatusCode::INTERNAL_SERVER_ERROR, "Redis error".into())
+        })?;
 
         let exists: bool = conn.exists(&key).await.map_err(|e| {
             warn!("jwt_auth: Redis 查询失败: key={}, err={}", key, e);
-            (StatusCode::INTERNAL_SERVER_ERROR, format!("Redis err: {}", e))
+            (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                format!("Redis err: {}", e),
+            )
         })?;
 
         if !exists {
