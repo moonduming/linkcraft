@@ -2,7 +2,7 @@
 一个基于 Rust 编写的短链接服务，采用微服务架构进行拆分。
 
 ## 简介
-linkcraft 是一个使用 Rust + Axum 构建的高性能短链接系统，项目分为多个微服务，包括：
+linkcraft 是一个使用 Rust + Axum 构建的短链接系统，项目分为多个微服务，包括：
 - user-service：负责用户注册与认证
 - link-service：负责短链生成与跳转
 - nginx：作为统一入口和反向代理，转发请求到对应服务
